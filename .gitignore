@@ -1,7 +1,8 @@
 backup
 build
 dist
-data
+./data
 ipynb
 *.egg-info
 *.zip
+'Dropped Text.txt'

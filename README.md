@@ -37,11 +37,13 @@ Read the real image.
 ```python
 src_image = plt.imread('data/src_image.jpg')
 ```
-![src_image](data/src_image.jpg)
+![src_image](virtual_camera/data/src_image.jpg)
+
 Convert the image to a virtual image. Alongside with mask.
 ```python
 dst_image, mask = vc.render_image(src_image, camera_real, vc.VCAMERA_PERSPECTIVE_FRONT)
 ```
-![dst_image](data/dst_image.jpg)
 
-![mask](data/mask.png)
+![dst_image](virtual_camera/data/dst_image.jpg)
+
+![mask](virtual_camera/data/mask.png)
