@@ -1,0 +1,7 @@
+backup
+build
+dist
+data
+ipynb
+*.egg-info
+*.zip
