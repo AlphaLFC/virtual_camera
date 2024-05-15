@@ -1,11 +1,6 @@
 import cv2
-import yaml
 import numpy as np
 
-# import matplotlib.pyplot as plt
-# %matplotlib inline
-
-from pathlib import Path
 from functools import partial
 from scipy.optimize import curve_fit
 from scipy.spatial.transform import Rotation
@@ -122,13 +117,14 @@ class FisheyeCamera(BaseCamera):
         - resolution : tuple (w, h)
         - extrinsic : list or tuple (R, t) in motovis-style ego system
         - intrinsic : list or tuple (cx, cy, fx, fy, p0, p1, p2, p3)
+        - fov : float, in degree
+        - ego_mask : in shape (h, w)
         """
-        super().__init__(resolution, extrinsic, intrinsic)
+        super().__init__(resolution, extrinsic, intrinsic, ego_mask=ego_mask)
         if fov is None:
             self.fov = 225
         else:
             self.fov = fov
-        self.ego_mask = ego_mask
 
     def project_points_from_camera_to_image(self, camera_points):
         # camera_points in image-style: x-y-z right-down-forward
@@ -214,7 +210,16 @@ class FisheyeCamera(BaseCamera):
 
     
     def _to_motovis_cfg(self):
-        pass
+        cfg_camera = {}
+        cfg_camera['sensor_model'] = 'src.sensors.cameras.OpenCVFisheyeCamera'
+        cfg_camera['image_size'] = self.resolution
+        quant = Rotation.from_matrix(self.R_e).as_quat()
+        cfg_camera['extrinsic'] = list(self.t_e) + list(quant)
+        cfg_camera['pp'] = self.intrinsic[:2]
+        cfg_camera['focal'] = self.intrinsic[2:4]
+        cfg_camera['inv_poly'] = self.intrinsic[4:]
+        cfg_camera['fov_fit'] = self.fov
+        return cfg_camera
 
 
     @classmethod
@@ -248,13 +253,14 @@ class PerspectiveCamera(BaseCamera):
         - image-style: x-y-z right-down-forward
         - pytorch3d-style: x-y-z left-up-forward
     """
-    def __init__(self, resolution, extrinsic, intrinsic):
+    def __init__(self, resolution, extrinsic, intrinsic, ego_mask=None):
         """## Args:
         - resolution : tuple (w, h)
         - extrinsic : list or tuple (R, t) in motovis-style ego system
         - intrinsic : list or tuple (cx, cy, fx, fy)
+        - ego_mask : in shape (h, w)
         """
-        super().__init__(resolution, extrinsic, intrinsic)
+        super().__init__(resolution, extrinsic, intrinsic, ego_mask=ego_mask)
     
     def unproject_points_from_image_to_camera(self):
         W, H = self.resolution
@@ -281,7 +287,14 @@ class PerspectiveCamera(BaseCamera):
         return uu, vv
     
     def _to_motovis_cfg(self):
-        pass
+        cfg_camera = {}
+        cfg_camera['sensor_model'] = 'src.sensors.cameras.PerspectiveCamera'
+        cfg_camera['image_size'] = self.resolution
+        quant = Rotation.from_matrix(self.R_e).as_quat()
+        cfg_camera['extrinsic'] = list(self.t_e) + list(quant)
+        cfg_camera['pp'] = self.intrinsic[:2]
+        cfg_camera['focal'] = self.intrinsic[2:4]
+        return cfg_camera
 
     @classmethod
     def init_from_nuscense_cfg(cls, cfg):
@@ -311,6 +324,7 @@ class PerspectiveCamera(BaseCamera):
         intrinsic = cfg_camera['pp'] + cfg_camera['focal']
 
         return cls(resolution, extrinsic, intrinsic)
+
 
 
 AVAILABLE_CAMERA_TYPES = [FisheyeCamera, PerspectiveCamera]
