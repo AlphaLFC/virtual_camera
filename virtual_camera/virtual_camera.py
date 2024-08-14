@@ -367,13 +367,13 @@ def render_image(src_img, src_camera, dst_camera, interpolation=cv2.INTER_LINEAR
         src_img_mask, 
         uu.reshape(dst_camera.resolution[::-1]),
         vv.reshape(dst_camera.resolution[::-1]),
-        interpolation=interpolation
+        interpolation=cv2.INTER_NEAREST
     )
 
     return dst_img, dst_img_mask
 
 
-def create_virtual_perspective_camera(resolution, euler_angles, transitions, intrinsic='auto'):
+def create_virtual_perspective_camera(resolution, euler_angles, translations, intrinsic='auto'):
     W, H = resolution
     if intrinsic == 'auto':
         cx = (W - 1) / 2
@@ -382,11 +382,11 @@ def create_virtual_perspective_camera(resolution, euler_angles, transitions, int
         intrinsic = (cx, cy, fx, fy)
     # ego system, in motovis-style, x-y-z right-forward-up
     R = Rotation.from_euler('xyz', euler_angles, degrees=True).as_matrix()
-    t = transitions
+    t = translations
     return PerspectiveCamera(resolution, (R, t), intrinsic)
 
 
-def create_virtual_fisheye_camera(resolution, euler_angles, transitions, intrinsic='auto'):
+def create_virtual_fisheye_camera(resolution, euler_angles, translations, intrinsic='auto'):
     # inv_poly: [0.05345955558134785, -0.005850248788053312, -0.0005388425917994607, -0.0001609567223788042]
     W, H = resolution
     if intrinsic == 'auto':
@@ -396,7 +396,7 @@ def create_virtual_fisheye_camera(resolution, euler_angles, transitions, intrins
         intrinsic = (cx, cy, fx, fy, 0.1, 0, 0, 0)
     # ego system, in motovis-style, x-y-z right-forward-up
     R = Rotation.from_euler('xyz', euler_angles, degrees=True).as_matrix()
-    t = transitions
+    t = translations
     return FisheyeCamera(resolution, (R, t), intrinsic)
         
 
