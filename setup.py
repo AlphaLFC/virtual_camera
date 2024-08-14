@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='virtual_camera',
-    version='0.0.4.2',
+    version='0.0.4.3',
     description='Virtual Camera',
     author='AlphaLFC',
     author_email='alphali@motovis.com',
