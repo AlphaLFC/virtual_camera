@@ -335,7 +335,7 @@ def _check_camera_type(camera):
     return any([isinstance(camera, camera_type) for camera_type in AVAILABLE_CAMERA_TYPES])
 
 
-def render_image(src_img, src_camera, dst_camera, interpolation=cv2.INTER_LINEAR):
+def render_image(src_img, src_camera, dst_camera, interpolation=cv2.INTER_LINEAR, dump_uu_vv=False):
     assert _check_camera_type(src_camera), 'AssertError: src_camera must be one of {}'.format(AVAILABLE_CAMERA_TYPES)
     assert _check_camera_type(dst_camera), 'AssertError: dst_camera must be one of {}'.format(AVAILABLE_CAMERA_TYPES)
 
@@ -369,7 +369,8 @@ def render_image(src_img, src_camera, dst_camera, interpolation=cv2.INTER_LINEAR
         vv.reshape(dst_camera.resolution[::-1]),
         interpolation=cv2.INTER_NEAREST
     )
-
+    if dump_uu_vv:
+        return dst_img, dst_img_mask, uu, vv
     return dst_img, dst_img_mask
 
 
