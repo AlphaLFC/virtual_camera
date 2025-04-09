@@ -244,7 +244,6 @@ class FisheyeCamera(BaseCamera):
     
 
 
-
 class PerspectiveCamera(BaseCamera):
     """
     Camera Coordinate System: image-style, normalized coords.
@@ -327,7 +326,98 @@ class PerspectiveCamera(BaseCamera):
 
 
 
-AVAILABLE_CAMERA_TYPES = [FisheyeCamera, PerspectiveCamera]
+class BrownConradyCamera(BaseCamera):
+    """
+    Camera Coordinate System: image-style, normalized coords.
+        - motovis-style: x-y-z right-forward-up
+        - openGL-style: x-y-z right-up-backward
+        - image-style: x-y-z right-down-forward
+        - pytorch3d-style: x-y-z left-up-forward
+    """
+    def __init__(self, resolution, extrinsic, intrinsic):
+        """## Args:
+        - resolution : tuple (w, h)
+        - extrinsic : list or tuple (R, t) in motovis-style ego system
+        - intrinsic : list or tuple (cx, cy, fx, fy, k1, k2, p1, p2, <k3, ...>)
+        """
+        super().__init__(resolution, extrinsic, intrinsic)
+
+
+    def unproject_points_from_image_to_camera(self):
+        W, H = self.resolution
+        cx, cy, fx, fy, k1, k2, p1, p2, *k_more = self.intrinsic
+        if len(k_more) == 0:
+            k3 = 0
+        else:
+            k3 = k_more[0]
+        
+        self.K = np.float32([
+            [fx, 0, cx], 
+            [0, fy, cy], 
+            [0,  0,  1]
+        ])
+
+        uu, vv = np.meshgrid(
+            np.linspace(0, W - 1, W), 
+            np.linspace(0, H - 1, H)
+        )
+
+        distorted_points = np.stack([uu, vv], axis=1).reshape(-1, 1, 2)
+
+        undistorted_points = cv2.undistortPoints(
+            src=distorted_points,
+            cameraMatrix=self.K,
+            distCoeffs=np.float32([k1, k2, p1, p2, k3])
+        ).reshape(-1, 2)
+
+        camera_points = np.stack([
+            undistorted_points[:, 0], 
+            undistorted_points[:, 1], 
+            np.ones_like(uu)
+        ], axis=0).reshape(3, -1)
+        
+        return camera_points
+
+    
+    def project_points_from_camera_to_image(self, camera_points):
+        cx, cy, fx, fy, k1, k2, p1, p2, *k_more = self.intrinsic
+        if len(k_more) == 0:
+            k3 = 0
+        else:
+            k3 = k_more[0]
+        
+        xx = camera_points[0]
+        yy = camera_points[1]
+        zz = camera_points[2]
+
+        valid_zz = zz > 1e-3
+
+        zz[valid_zz] = 1e-3
+        xx[valid_zz] = 0
+        yy[valid_zz] = 0
+
+        xx_ = xx_undistorted = xx / zz
+        yy_ = yy_undistorted = yy / zz
+        rr_ = rr_undistorted = np.sqrt(xx_undistorted ** 2 + yy_undistorted ** 2)
+
+        rho_coeff = (1 + k1 * rr_ ** 2 + k2 * rr_ ** 4 + k3 * rr_ ** 6)
+
+        xx_distorted = xx_ * rho_coeff + 2 * p1 * xx_ * yy_ + p2 * (rr_ ** 2 + 2 * xx_ ** 2)
+        yy_distorted = yy_ * rho_coeff + p1 * (rr_ ** 2 + 2 * yy_ ** 2) + 2 * p2 * xx_ * yy_
+
+        uu = np.float32(fx * xx_distorted + cx)
+        vv = np.float32(fy * yy_distorted + cy)
+        uu[valid_zz] = -1
+        vv[valid_zz] = -1
+
+        return uu, vv
+
+
+
+PinholeCamera = BrownConradyCamera
+
+
+AVAILABLE_CAMERA_TYPES = [FisheyeCamera, PerspectiveCamera, BrownConradyCamera, PinholeCamera]
 
 
 
