@@ -283,6 +283,9 @@ class PerspectiveCamera(BaseCamera):
         img_points[2, np.abs(img_points[2]) < 1e-5] = 1e-5
         uu = np.float32(img_points[0] / img_points[2])
         vv = np.float32(img_points[1] / img_points[2])
+        mask = (uu >= 0) * (uu < self.resolution[0]) * (vv >= 0) * (vv < self.resolution[1]) * (camera_points[2] > 1e-3)
+        uu[~mask] = -1
+        vv[~mask] = -1
         return uu, vv
     
     def _to_motovis_cfg(self):
@@ -345,29 +348,21 @@ class BrownConradyCamera(BaseCamera):
 
     def unproject_points_from_image_to_camera(self):
         W, H = self.resolution
-        cx, cy, fx, fy, k1, k2, p1, p2, *k_more = self.intrinsic
-        if len(k_more) == 0:
-            k3 = 0
-        else:
-            k3 = k_more[0]
-        
-        self.K = np.float32([
-            [fx, 0, cx], 
-            [0, fy, cy], 
-            [0,  0,  1]
-        ])
+        k1, k2, p1, p2, *k_more = self.intrinsic[4:]
+        k3 = k_more[0] if k_more else 0.
 
         uu, vv = np.meshgrid(
             np.linspace(0, W - 1, W), 
             np.linspace(0, H - 1, H)
         )
 
-        distorted_points = np.stack([uu, vv], axis=1).reshape(-1, 1, 2)
+        distorted_points = np.stack([uu, vv], axis=-1).reshape(-1, 1, 2)
 
         undistorted_points = cv2.undistortPoints(
             src=distorted_points,
             cameraMatrix=self.K,
-            distCoeffs=np.float32([k1, k2, p1, p2, k3])
+            distCoeffs=np.float32([k1, k2, p1, p2, k3]),
+            P=None
         ).reshape(-1, 2)
 
         camera_points = np.stack([
@@ -381,10 +376,7 @@ class BrownConradyCamera(BaseCamera):
     
     def project_points_from_camera_to_image(self, camera_points):
         cx, cy, fx, fy, k1, k2, p1, p2, *k_more = self.intrinsic
-        if len(k_more) == 0:
-            k3 = 0
-        else:
-            k3 = k_more[0]
+        k3 = k_more[0] if k_more else 0.
         
         xx = camera_points[0]
         yy = camera_points[1]
@@ -392,25 +384,44 @@ class BrownConradyCamera(BaseCamera):
 
         valid_zz = zz > 1e-3
 
-        zz[valid_zz] = 1e-3
-        xx[valid_zz] = 0
-        yy[valid_zz] = 0
+        uu = np.full_like(xx, -1, dtype=np.float32)
+        vv = np.full_like(yy, -1, dtype=np.float32)
 
-        xx_ = xx_undistorted = xx / zz
-        yy_ = yy_undistorted = yy / zz
-        rr_ = rr_undistorted = np.sqrt(xx_undistorted ** 2 + yy_undistorted ** 2)
+        xx_ = xx[valid_zz] / zz[valid_zz]
+        yy_ = yy[valid_zz] / zz[valid_zz]
+        rr_ = np.sqrt(xx_ ** 2 + yy_ ** 2)
 
         rho_coeff = (1 + k1 * rr_ ** 2 + k2 * rr_ ** 4 + k3 * rr_ ** 6)
-
         xx_distorted = xx_ * rho_coeff + 2 * p1 * xx_ * yy_ + p2 * (rr_ ** 2 + 2 * xx_ ** 2)
         yy_distorted = yy_ * rho_coeff + p1 * (rr_ ** 2 + 2 * yy_ ** 2) + 2 * p2 * xx_ * yy_
+        uu[valid_zz] = np.float32(fx * xx_distorted + cx)
+        vv[valid_zz] = np.float32(fy * yy_distorted + cy)
 
-        uu = np.float32(fx * xx_distorted + cx)
-        vv = np.float32(fy * yy_distorted + cy)
-        uu[valid_zz] = -1
-        vv[valid_zz] = -1
+        mask = (uu >= 0) * (uu < self.resolution[0]) * (vv >= 0) * (vv < self.resolution[1])
+        uu[~mask] = -1
+        vv[~mask] = -1
 
         return uu, vv
+
+        # zz[valid_zz] = 1e-3
+        # xx[valid_zz] = 0
+        # yy[valid_zz] = 0
+
+        # xx_ = xx_undistorted = xx / zz
+        # yy_ = yy_undistorted = yy / zz
+        # rr_ = rr_undistorted = np.sqrt(xx_undistorted ** 2 + yy_undistorted ** 2)
+
+        # rho_coeff = (1 + k1 * rr_ ** 2 + k2 * rr_ ** 4 + k3 * rr_ ** 6)
+
+        # xx_distorted = xx_ * rho_coeff + 2 * p1 * xx_ * yy_ + p2 * (rr_ ** 2 + 2 * xx_ ** 2)
+        # yy_distorted = yy_ * rho_coeff + p1 * (rr_ ** 2 + 2 * yy_ ** 2) + 2 * p2 * xx_ * yy_
+
+        # uu = np.float32(fx * xx_distorted + cx)
+        # vv = np.float32(fy * yy_distorted + cy)
+        # uu[valid_zz] = -1
+        # vv[valid_zz] = -1
+
+        # return uu, vv
 
 
 
