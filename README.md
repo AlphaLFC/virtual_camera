@@ -1,4 +1,6 @@
 # Virtual Camera
+[![PyPI version](https://img.shields.io/pypi/v/virtual-camera.svg)](https://pypi.org/project/virtual-camera/)
+[![Python versions](https://img.shields.io/pypi/pyversions/virtual-camera.svg)](https://pypi.org/project/virtual-camera/)
 
 ## Install
 ```bash
