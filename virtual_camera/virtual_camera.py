@@ -348,8 +348,7 @@ class BrownConradyCamera(BaseCamera):
 
     def unproject_points_from_image_to_camera(self):
         W, H = self.resolution
-        k1, k2, p1, p2, *k_more = self.intrinsic[4:]
-        k3 = k_more[0] if k_more else 0.
+        dist_coeffs = np.float32(self.intrinsic[4:])
 
         uu, vv = np.meshgrid(
             np.linspace(0, W - 1, W), 
@@ -361,7 +360,7 @@ class BrownConradyCamera(BaseCamera):
         undistorted_points = cv2.undistortPoints(
             src=distorted_points,
             cameraMatrix=self.K,
-            distCoeffs=np.float32([k1, k2, p1, p2, k3]),
+            distCoeffs=dist_coeffs,
             P=None
         ).reshape(-1, 2)
 
@@ -375,8 +374,7 @@ class BrownConradyCamera(BaseCamera):
 
     
     def project_points_from_camera_to_image(self, camera_points):
-        cx, cy, fx, fy, k1, k2, p1, p2, *k_more = self.intrinsic
-        k3 = k_more[0] if k_more else 0.
+        dist_coeffs = np.float32(self.intrinsic[4:])
         
         xx = camera_points[0]
         yy = camera_points[1]
@@ -387,42 +385,27 @@ class BrownConradyCamera(BaseCamera):
         uu = np.full_like(xx, -1, dtype=np.float32)
         vv = np.full_like(yy, -1, dtype=np.float32)
 
-        xx_ = xx[valid_zz] / zz[valid_zz]
-        yy_ = yy[valid_zz] / zz[valid_zz]
-        rr_ = np.sqrt(xx_ ** 2 + yy_ ** 2)
+        if np.sum(valid_zz) == 0:
+            return uu, vv
 
-        rho_coeff = (1 + k1 * rr_ ** 2 + k2 * rr_ ** 4 + k3 * rr_ ** 6)
-        xx_distorted = xx_ * rho_coeff + 2 * p1 * xx_ * yy_ + p2 * (rr_ ** 2 + 2 * xx_ ** 2)
-        yy_distorted = yy_ * rho_coeff + p1 * (rr_ ** 2 + 2 * yy_ ** 2) + 2 * p2 * xx_ * yy_
-        uu[valid_zz] = np.float32(fx * xx_distorted + cx)
-        vv[valid_zz] = np.float32(fy * yy_distorted + cy)
+        points_3d = np.stack([xx[valid_zz], yy[valid_zz], zz[valid_zz]], axis=-1).reshape(-1, 1, 3)
 
-        mask = (uu >= 0) * (uu < self.resolution[0]) * (vv >= 0) * (vv < self.resolution[1])
-        uu[~mask] = -1
-        vv[~mask] = -1
+        image_points, _ = cv2.projectPoints(
+            points_3d, 
+            np.zeros((3,1), dtype=np.float32), 
+            np.zeros((3,1), dtype=np.float32), 
+            self.K, 
+            dist_coeffs
+        )
 
+        uu[valid_zz] = image_points[:, 0, 0]
+        vv[valid_zz] = image_points[:, 0, 1]
+
+        valid_mask = (uu >= 0) * (uu < self.resolution[0]) * (vv >= 0) * (vv < self.resolution[1])
+        uu[~valid_mask] = -1
+        vv[~valid_mask] = -1
+        
         return uu, vv
-
-        # zz[valid_zz] = 1e-3
-        # xx[valid_zz] = 0
-        # yy[valid_zz] = 0
-
-        # xx_ = xx_undistorted = xx / zz
-        # yy_ = yy_undistorted = yy / zz
-        # rr_ = rr_undistorted = np.sqrt(xx_undistorted ** 2 + yy_undistorted ** 2)
-
-        # rho_coeff = (1 + k1 * rr_ ** 2 + k2 * rr_ ** 4 + k3 * rr_ ** 6)
-
-        # xx_distorted = xx_ * rho_coeff + 2 * p1 * xx_ * yy_ + p2 * (rr_ ** 2 + 2 * xx_ ** 2)
-        # yy_distorted = yy_ * rho_coeff + p1 * (rr_ ** 2 + 2 * yy_ ** 2) + 2 * p2 * xx_ * yy_
-
-        # uu = np.float32(fx * xx_distorted + cx)
-        # vv = np.float32(fy * yy_distorted + cy)
-        # uu[valid_zz] = -1
-        # vv[valid_zz] = -1
-
-        # return uu, vv
-
 
 
 PinholeCamera = BrownConradyCamera
