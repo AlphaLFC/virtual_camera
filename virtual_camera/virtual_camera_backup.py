@@ -266,317 +266,107 @@ class FisheyeCamera(BaseCamera):
 
 class FThetaCamera(BaseCamera):
     """
-    NVIDIA F-Theta camera model for fisheye cameras.
-    
     Camera Coordinate System: image-style, normalized coords.
         - lidar-style: x-y-z right-forward-up
         - openGL-style: x-y-z right-up-backward
         - image-style: x-y-z right-down-forward
         - pytorch3d-style: x-y-z left-up-forward
-    
-    Intrinsic format: (cx, cy, fx, fy, sign, *coeffs)
-        - 'F': Forward only, coeffs = [k1, k2, k3, k4, k5]
-        - 'B': Backward only, coeffs = [j1, j2, j3, j4, j5]
-        - 'FB': Both, coeffs = [k1, k2, k3, k4, k5, j1, j2, j3, j4, j5]
     """
-    
     def __init__(self, resolution, extrinsic, intrinsic, fov=None, ego_mask=None):
-        """
-        Args:
-            resolution: tuple (w, h)
-            extrinsic: tuple (R, t)
-            intrinsic: tuple (cx, cy, fx, fy, sign, *coeffs)
-                - sign: 'F', 'B', or 'FB'
-                - coeffs: polynomial coefficients (5 for F/B, 10 for FB)
-            fov: float or None - field of view in degrees (auto-computed if None)
-            ego_mask: ndarray in shape (h, w)
+        """## Args:
+        - resolution : tuple (w, h)
+        - extrinsic : list or tuple (R, t)
+        - intrinsic : list or tuple (cx, cy, fx, fy, p0, p1, p2, p3)
+        - fov : float, in degree
+        - ego_mask : in shape (h, w)
         """
         super().__init__(resolution, extrinsic, intrinsic, ego_mask=ego_mask)
-        
-        # Parse intrinsic parameters
-        self.cx, self.cy, self.fx, self.fy = intrinsic[:4]
-        self.poly_sign = intrinsic[4]
-        coeffs = list(intrinsic[5:])
-        
-        # Validate and parse polynomial coefficients
-        self.forward_coeffs = None
-        self.backward_coeffs = None
-        
-        if self.poly_sign == 'F':
-            # Forward only: 5 coefficients
-            assert len(coeffs) >= 5, f"Forward only requires 5 coefficients, got {len(coeffs)}"
-            self.forward_coeffs = coeffs[:5]
-            # Auto-fit backward polynomial
-            self.backward_coeffs = self._fit_backward_from_forward()
-            
-        elif self.poly_sign == 'B':
-            # Backward only: 5 coefficients (NVIDIA dataset format)
-            assert len(coeffs) >= 5, f"Backward only requires 5 coefficients, got {len(coeffs)}"
-            self.backward_coeffs = coeffs[:5]
-            # Auto-fit forward polynomial
-            self.forward_coeffs = self._fit_forward_from_backward()
-            
-        elif self.poly_sign == 'FB':
-            # Both forward and backward: 10 coefficients
-            assert len(coeffs) >= 10, f"Both requires 10 coefficients, got {len(coeffs)}"
-            self.forward_coeffs = coeffs[:5]
-            self.backward_coeffs = coeffs[5:10]
-            # Validate polynomial consistency
-            self._validate_polynomial_pair()
-        else:
-            raise ValueError(f"Invalid polynomial sign '{self.poly_sign}'. Must be 'F', 'B', or 'FB'")
-        
-        # Set or compute FOV
         if fov is None:
-            self.fov = self._compute_fov()
+            self.fov = 225
         else:
             self.fov = fov
-    
-    def _evaluate_polynomial(self, x, coeffs):
-        """Evaluate polynomial: sum(c_i * x^i) for i in range(len(coeffs))"""
-        result = np.zeros_like(x, dtype=np.float64)
-        for i, c in enumerate(coeffs):
-            result += c * (x ** (i + 1))  # Start from power 1 (coeffs[0] is k1/j1)
-        return result
-    
-    def _fit_backward_from_forward(self, num_samples=2000):
-        """Fit backward polynomial from forward polynomial using curve fitting."""
-        # Sample theta values
-        theta_max = np.pi  # Up to 180 degrees
-        theta_samples = np.linspace(0, theta_max, num_samples)
-        
-        # Compute corresponding r values using forward polynomial
-        r_samples = self._evaluate_polynomial(theta_samples, self.forward_coeffs)
-        
-        # Use curve fitting to find backward polynomial
-        # b(r) = j1*r + j2*r^2 + j3*r^3 + j4*r^4 + j5*r^5
-        def backward_poly(r, j1, j2, j3, j4, j5):
-            return j1*r + j2*r**2 + j3*r**3 + j4*r**4 + j5*r**5
-        
-        # Fit only valid range (where r is monotonically increasing)
-        valid_mask = r_samples > 1e-6
-        if np.sum(valid_mask) < 10:
-            # Fallback: use approximate inverse
-            focal_length = self.forward_coeffs[0] if len(self.forward_coeffs) > 0 else 500.0
-            return [1.0/focal_length, 0.0, 0.0, 0.0, 0.0]
-        
-        try:
-            popt, _ = curve_fit(backward_poly, r_samples[valid_mask], theta_samples[valid_mask])
-            return list(popt)
-        except:
-            # Fallback: use approximate inverse
-            focal_length = self.forward_coeffs[0] if len(self.forward_coeffs) > 0 else 500.0
-            return [1.0/focal_length, 0.0, 0.0, 0.0, 0.0]
-    
-    def _fit_forward_from_backward(self, num_samples=2000):
-        """Fit forward polynomial from backward polynomial using curve fitting."""
-        # Estimate maximum radius from image resolution
-        W, H = self.resolution
-        max_r = np.sqrt((W/2)**2 + (H/2)**2) * 1.5  # Conservative estimate
-        
-        # Sample r values
-        r_samples = np.linspace(0, max_r, num_samples)
-        
-        # Compute corresponding theta values using backward polynomial
-        theta_samples = self._evaluate_polynomial(r_samples, self.backward_coeffs)
-        
-        # Use curve fitting to find forward polynomial
-        # f(theta) = k1*theta + k2*theta^2 + k3*theta^3 + k4*theta^4 + k5*theta^5
-        def forward_poly(theta, k1, k2, k3, k4, k5):
-            return k1*theta + k2*theta**2 + k3*theta**3 + k4*theta**4 + k5*theta**5
-        
-        # Fit only valid range
-        valid_mask = theta_samples > 1e-6
-        if np.sum(valid_mask) < 10:
-            # Fallback: use approximate focal length
-            inv_focal = self.backward_coeffs[0] if len(self.backward_coeffs) > 0 else 0.002
-            return [1.0/inv_focal, 0.0, 0.0, 0.0, 0.0]
-        
-        try:
-            popt, _ = curve_fit(forward_poly, theta_samples[valid_mask], r_samples[valid_mask])
-            return list(popt)
-        except:
-            # Fallback: use approximate focal length
-            inv_focal = self.backward_coeffs[0] if len(self.backward_coeffs) > 0 else 0.002
-            return [1.0/inv_focal, 0.0, 0.0, 0.0, 0.0]
-    
-    def _validate_polynomial_pair(self, tolerance=1e-3):
-        """Validate that forward and backward polynomials are inverses."""
-        # Test round-trip consistency
-        theta_test = np.linspace(0.01, np.pi/2, 100)
-        
-        # Forward then backward
-        r_forward = self._evaluate_polynomial(theta_test, self.forward_coeffs)
-        theta_recovered = self._evaluate_polynomial(r_forward, self.backward_coeffs)
-        
-        max_error = np.max(np.abs(theta_recovered - theta_test))
-        if max_error > tolerance:
-            print(f"Warning: Polynomial pair validation failed. Max error: {max_error:.6f}")
-    
-    def _compute_fov(self):
-        """Compute maximum valid FOV from polynomial behavior."""
-        # Find maximum theta where forward polynomial is monotonically increasing
-        theta_test = np.linspace(0, np.pi, 1000)
-        r_test = self._evaluate_polynomial(theta_test, self.forward_coeffs)
-        
-        # Find where dr/dtheta becomes negative or too small
-        dr = np.diff(r_test)
-        valid_indices = np.where(dr > 1e-6)[0]
-        
-        if len(valid_indices) > 0:
-            max_theta = theta_test[valid_indices[-1]]
-            return min(max_theta * 2 * 180 / np.pi, 270)  # Cap at 270 degrees
-        else:
-            return 200  # Default FOV
-    
+
     def project_points_from_camera_to_image(self, camera_points):
-        """
-        Forward projection: 3D camera coordinates -> 2D image coordinates
-        
-        Args:
-            camera_points: ndarray of shape (3, N) in image-style coords
-                (x-y-z right-down-forward)
-        
-        Returns:
-            uu, vv: image coordinates
-        """
+        # camera_points in image-style: x-y-z right-down-forward
+        cx, cy, fx, fy, p0, p1, p2, p3 = self.intrinsic
         xx = camera_points[0]
         yy = camera_points[1]
         zz = camera_points[2]
-        
-        # Distance to optical axis
+        # distance to camera center ray
         dd = np.sqrt(xx**2 + yy**2)
-        
-        # Angle between ray and optical axis
-        theta = np.arctan2(dd, zz)
-        
-        # Apply FOV mask
-        fov_mask = np.logical_and(
-            theta >= -self.fov / 2 * np.pi / 180,
-            theta <= self.fov / 2 * np.pi / 180
-        )
-        
-        # Compute radius using forward polynomial: f(theta) = r
-        r_distorted = self._evaluate_polynomial(theta, self.forward_coeffs)
-        
-        # Avoid division by zero
-        dd_safe = np.where(dd < 1e-6, 1e-6, dd)
-        
-        # Project to image coordinates
-        uu = np.float32(self.fx * (r_distorted * xx / dd_safe) + self.cx)
-        vv = np.float32(self.fy * (r_distorted * yy / dd_safe) + self.cy)
-        
-        # Mask out-of-FOV points
+        # radius(focal=1) to light center point, aka theta between ray and center ray
+        rr = theta = np.arctan2(dd, zz)
+        # rr = theta = np.clip(np.arctan2(dd, zz), -self.fov / 2 * np.pi / 180, self.fov / 2 * np.pi / 180)
+        fov_mask = np.logical_and(theta >= -self.fov / 2 * np.pi / 180, theta <= self.fov / 2 * np.pi / 180)
+    
+        # projected coords on fisheye camera image
+        r_distorted = theta_distorted = proj_func(theta, (p0, p1, p2, p3))
+        uu = np.float32(fx * (r_distorted * xx / dd) + cx)
+        vv = np.float32(fy * (r_distorted * yy / dd) + cy)
         uu[~fov_mask] = -1
         vv[~fov_mask] = -1
-        
         return uu, vv
-    
+
+
     def unproject_points_from_image_to_camera(self):
-        """
-        Backward projection: 2D image coordinates -> 3D camera rays
-        
-        Returns:
-            camera_points: ndarray of shape (3, H*W) in image-style coords
-        """
         W, H = self.resolution
+        cx, cy, fx, fy, p0, p1, p2, p3 = self.intrinsic
+        unproj_func = get_unproj_func(p0, p1, p2, p3, fov=self.fov)
         
-        # Create image coordinate grid
         uu, vv = np.meshgrid(
-            np.linspace(0, W - 1, W),
+            np.linspace(0, W - 1, W), 
             np.linspace(0, H - 1, H)
         )
+        x_distorted = (uu - cx) / fx
+        y_distorted = (vv - cy) / fy
         
-        # Normalize to camera coordinates
-        x_distorted = (uu - self.cx) / self.fx
-        y_distorted = (vv - self.cy) / self.fy
-        
-        # Compute radius from principal point
+        # r_distorted = theta_distorted
         r_distorted = np.sqrt(x_distorted**2 + y_distorted**2)
-        
-        # Compute theta using backward polynomial: b(r) = theta
-        theta = self._evaluate_polynomial(r_distorted, self.backward_coeffs)
-        
-        # Update camera mask
+        # r_distorted[r_distorted < 1e-5] = 1e-5
+        theta = unproj_func(r_distorted)
+        # theta = np.clip(theta, - 0.5 * self.fov * np.pi / 180, 0.5 * self.fov * np.pi / 180)
         self.camera_mask = np.float32(np.abs(theta * 180 / np.pi) < self.fov / 2)
-        
-        # Avoid division by zero
-        r_safe = np.where(r_distorted < 1e-6, 1e-6, r_distorted)
-        
-        # Compute 3D ray direction
-        sin_theta = np.sin(theta)
-        xx = x_distorted * sin_theta / r_safe
-        yy = y_distorted * sin_theta / r_safe
+    
+        # get camera coords by ray intersecting with a sphere in image-style (x-y-z right-down-forward)
+        r_distorted[r_distorted < 1e-5] = 1e-5
+        dd = np.sin(theta)
+        xx = x_distorted * dd / r_distorted
+        yy = y_distorted * dd / r_distorted
         zz = np.cos(theta)
         
         camera_points = np.stack([xx, yy, zz], axis=0).reshape(3, -1)
+
         return camera_points
     
+
     def get_camera_mask(self, use_fov_mask=False):
         """
         Returns a mask of the camera's view.
-        
-        Args:
-            use_fov_mask: if True, compute mask based on FOV
-        
-        Returns:
-            mask: ndarray of shape (H, W)
         """
         if self.camera_mask is None and use_fov_mask:
-            _ = self.unproject_points_from_image_to_camera()
+            W, H = self.resolution
+            cx, cy, fx, fy, p0, p1, p2, p3 = self.intrinsic
+            unproj_func = get_unproj_func(p0, p1, p2, p3, fov=self.fov)
             
+            uu, vv = np.meshgrid(
+                np.linspace(0, W - 1, W), 
+                np.linspace(0, H - 1, H)
+            )
+            x_distorted = (uu - cx) / fx
+            y_distorted = (vv - cy) / fy
+            
+            # r_distorted = theta_distorted
+            r_distorted = np.sqrt(x_distorted**2 + y_distorted**2)
+            r_distorted[r_distorted < 1e-5] = 1e-5
+            theta = unproj_func(r_distorted)
+            self.camera_mask = np.float32(np.abs(theta * 180 / np.pi) < self.fov / 2)
+        
             if self.ego_mask is not None:
                 self.camera_mask *= self.ego_mask
         else:
             self.camera_mask = self.ego_mask
-        
-        return self.camera_mask
     
-    @classmethod
-    def init_from_nvidia_cfg(cls, cfg, extrinsic=None, fov=None, ego_mask=None):
-        """
-        Initialize from NVIDIA PhysicalAI dataset format.
-        
-        Args:
-            cfg: dict with keys from NVIDIA parquet format:
-                - width, height: image dimensions
-                - cx, cy: principal point
-                - bw_poly_0..bw_poly_4: backward polynomial coefficients
-                - fw_poly_0..fw_poly_4: forward polynomial coefficients (optional)
-            extrinsic: tuple (R, t) or None
-            fov: float or None
-            ego_mask: ndarray or None
-        
-        Returns:
-            FThetaCamera instance
-        """
-        resolution = (cfg['width'], cfg['height'])
-        cx, cy = cfg['cx'], cfg['cy']
-        
-        # Default focal lengths (can be derived from polynomials if needed)
-        fx = fy = 500.0  # Will be refined based on polynomials
-        
-        # Extract backward polynomial coefficients (always present in NVIDIA format)
-        backward_coeffs = [
-            cfg.get(f'bw_poly_{i}', 0.0) for i in range(5)
-        ]
-        
-        # Check if forward coefficients are available
-        if all(f'fw_poly_{i}' in cfg for i in range(5)):
-            forward_coeffs = [cfg[f'fw_poly_{i}'] for i in range(5)]
-            # Use 'FB' format
-            intrinsic = (cx, cy, fx, fy, 'FB') + tuple(forward_coeffs) + tuple(backward_coeffs)
-        else:
-            # Use 'B' format (backward only)
-            intrinsic = (cx, cy, fx, fy, 'B') + tuple(backward_coeffs)
-        
-        if extrinsic is None:
-            # Default extrinsic (identity)
-            R = np.eye(3)
-            t = np.zeros(3)
-            extrinsic = (R, t)
-        
-        return cls(resolution, extrinsic, intrinsic, fov=fov, ego_mask=ego_mask)
+        return self.camera_mask
 
 
 
@@ -747,7 +537,7 @@ class BrownConradyCamera(BaseCamera):
 PinholeCamera = BrownConradyCamera
 
 
-AVAILABLE_CAMERA_TYPES = [FisheyeCamera, FThetaCamera, PerspectiveCamera, BrownConradyCamera, PinholeCamera]
+AVAILABLE_CAMERA_TYPES = [FisheyeCamera, PerspectiveCamera, BrownConradyCamera, PinholeCamera]
 
 
 
