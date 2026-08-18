@@ -913,6 +913,8 @@ def render_image(src_img, src_camera, dst_camera, interpolation=cv2.INTER_LINEAR
         vv.reshape(dst_camera.resolution[::-1]),
         interpolation=interpolation
     )
+    if src_img.ndim == 3 and src_img.shape[2] == 1 and dst_img.ndim == 2:
+        dst_img = dst_img[..., np.newaxis]
     
     src_img_mask = np.ones(src_img.shape[:2], dtype=np.float32)
     if src_camera_mask is not None:
